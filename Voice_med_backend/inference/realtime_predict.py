@@ -5,203 +5,167 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import numpy as np
-from deepface import DeepFace
-from gtts import gTTS
-import playsound
-import tempfile
+import pyttsx3
+import threading
 
 # -----------------------------
-# Paths
+# Paths (Absolute for stability)
 # -----------------------------
+HAND_MODEL = "models/hand_landmarker.task"
+FACE_MODEL = "models/face_landmarker.task"
+CLASSIFIER_PATH = "models/isl_classifier.pkl"
+SCALER_PATH = "models/scaler.pkl"
+
+
 from labelmap import LABEL_TO_WORD
-
-MODEL_PATH = os.path.join("models", "hand_landmarker.task")
-CLASSIFIER_PATH = os.path.join("models", "isl_classifier.pkl")
-SCALER_PATH = os.path.join("models", "scaler.pkl")
-
-# -----------------------------
-# Load ML model & scaler
-# -----------------------------
 classifier = joblib.load(CLASSIFIER_PATH)
 scaler = joblib.load(SCALER_PATH)
-print("Loaded trained classifier and scaler")
 
-# -----------------------------
-# MediaPipe Hand Landmarker
-# -----------------------------
-base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
-options = vision.HandLandmarkerOptions(
-    base_options=base_options,
-    num_hands=1
+# MediaPipe Initialization (FIXED: Variable name corrected)
+base_options_hand = python.BaseOptions(model_asset_path=HAND_MODEL)
+hand_detector = vision.HandLandmarker.create_from_options(
+    vision.HandLandmarkerOptions(base_options=base_options_hand, num_hands=1)
 )
-detector = vision.HandLandmarker.create_from_options(options)
+
+base_options_face = python.BaseOptions(model_asset_path=FACE_MODEL)
+face_detector = vision.FaceLandmarker.create_from_options(
+    vision.FaceLandmarkerOptions(base_options=base_options_face, output_face_blendshapes=True, num_faces=1)
+)
 
 # -----------------------------
-# Sentence state
+# 1. Humane Offline Voice Engine
+# -----------------------------
+def speak_humane_offline(text, emotion):
+    def run():
+        engine = pyttsx3.init()
+        voices = engine.getProperty('voices')
+        
+        # Humanizing: Selecting a softer 'Natural' style voice if available
+        # On Windows, index 1 is often Microsoft Zira (Female/Softer)
+        if len(voices) > 1:
+            engine.setProperty('voice', voices[1].id) 
+
+        rate = 155
+        volume = 1.0
+        processed_text = text
+
+        # Tone Modulation via Punctuation
+        if emotion == "happy":
+            rate = 185
+            processed_text = f"Oh! {text}!" # Adds excitatory pitch
+        elif emotion == "sad":
+            rate = 115
+            volume = 0.7
+            processed_text = f"{text}..." # Adds trailing 'heavy' pause
+        elif emotion == "angry":
+            rate = 210
+            volume = 1.0
+            processed_text = text.upper() # Simulates intensity
+        elif emotion == "surprise":
+            rate = 190
+            processed_text = f"Wait, {text}?" # Adds questioning inflection
+        
+        engine.setProperty('rate', rate)
+        engine.setProperty('volume', volume)
+        engine.say(processed_text)
+        engine.runAndWait()
+        engine.stop()
+
+    threading.Thread(target=run, daemon=True).start()
+
+# -----------------------------
+# 2. Main Logic & Loop
 # -----------------------------
 sentence_buffer = []
 last_prediction = None
 last_committed_word = None
 stable_counter = 0
-WORD_HOLD_FRAMES = 10
-
-# -----------------------------
-# Emotion state
-# -----------------------------
 current_emotion = "neutral"
+emotion_last = None
+emotion_counter = 0
 
-# -----------------------------
-# Camera
-# -----------------------------
 cap = cv2.VideoCapture(0)
 
 while cap.isOpened():
     ret, frame = cap.read()
-    if not ret:
-        break
-
+    if not ret: break
     frame = cv2.flip(frame, 1)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-    # -----------------------------
-    # Emotion Detection (Lightweight continuous)
-    # -----------------------------
-    try:
-        result = DeepFace.analyze(
-            frame,
-            actions=['emotion'],
-            enforce_detection=False
-        )
-        current_emotion = result[0]['dominant_emotion']
-    except:
-        pass
+    # A. EMOTION (High Sensitivity Blendshapes)
+    face_result = face_detector.detect(mp_image)
+    detected_emo = "neutral"
+    
+    if face_result.face_blendshapes:
+        # Access the first detected face's scores
+        s = {b.category_name: b.score for b in face_result.face_blendshapes[0]}
+        
+        smile = (s.get("mouthSmileLeft", 0) + s.get("mouthSmileRight", 0)) / 2
+        frown = (s.get("mouthFrownLeft", 0) + s.get("mouthFrownRight", 0)) / 2
+        brow_inner_up = s.get("browInnerUp", 0)
+        brow_down = (s.get("browDownLeft", 0) + s.get("browDownRight", 0)) / 2
+        brow_up_L = s.get("browOuterUpLeft", 0)
+        brow_up_R = s.get("browOuterUpRight", 0)
+        eye_wide = (s.get("eyeWideLeft", 0) + s.get("eyeWideRight", 0)) / 2
 
-    # -----------------------------
-    # Hand Detection
-    # -----------------------------
-    mp_image = mp.Image(
-        image_format=mp.ImageFormat.SRGB,
-        data=rgb
-    )
+        # Ultra-Sensitive Hierarchy
+        if brow_down > 0.15 or abs(brow_up_L - brow_up_R) > 0.25: 
+            detected_emo = "angry"
+        elif frown > 0.07 or brow_inner_up > 0.12: 
+            detected_emo = "sad"
+        elif brow_up_L > 0.25 and brow_up_R > 0.25 and eye_wide > 0.3: 
+            detected_emo = "surprise"
+        elif smile > 0.25: 
+            detected_emo = "happy"
 
-    result = detector.detect(mp_image)
+    # Smooth emotion transitions
+    if detected_emo == emotion_last: emotion_counter += 1
+    else: emotion_counter, emotion_last = 1, detected_emo
+    if emotion_counter >= 3: current_emotion = detected_emo
 
-    if result.hand_landmarks:
-        hand = result.hand_landmarks[0]
+    # B. HAND RECOGNITION (Fixed Result Extraction)
+    hand_result = hand_detector.detect(mp_image)
+    active_word = "None"
+    
+    if hand_result.hand_landmarks:
+        # Task API returns a list of landmarks for each hand
+        landmarks = hand_result.hand_landmarks[0]
         features = []
-
-        for lm in hand:
+        for lm in landmarks:
             features.extend([lm.x, lm.y, lm.z])
-
-        X = np.array(features).reshape(1, -1)
-        X_scaled = scaler.transform(X)
-
-        predicted_label = classifier.predict(X_scaled)[0]
-        predicted_word = LABEL_TO_WORD.get(predicted_label, predicted_label)
-
-        # Stability logic
-        if predicted_word == last_prediction:
-            stable_counter += 1
-        else:
-            stable_counter = 1
-            last_prediction = predicted_word
-
-        if stable_counter == WORD_HOLD_FRAMES:
-
-            # ---------- FULL STOP ----------
-            if predicted_word == "FULL STOP":
-
-                if sentence_buffer:
-                    final_sentence = " ".join(sentence_buffer)
-                    print("Sentence completed:", final_sentence)
-                    print("Emotion:", current_emotion)
-
-                    # Emotion-based speech modification
-                    speech_text = final_sentence
-
-                    if current_emotion == "happy":
-                        speech_text += " 😊"
-                    elif current_emotion == "sad":
-                        speech_text += " 😔"
-                    elif current_emotion == "angry":
-                        speech_text += " 😠"
-
-                    # Text-to-Speech using gTTS
-                    tts = gTTS(text=speech_text, lang='en')
-                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-                    tts.save(temp_file.name)
-                    playsound.playsound(temp_file.name)
-
+        
+        # Classifier Prediction
+        X_scaled = scaler.transform(np.array(features).reshape(1, -1))
+        pred = classifier.predict(X_scaled)
+        word = LABEL_TO_WORD.get(pred[0], pred[0])
+        active_word = word
+        
+        if word == last_prediction: stable_counter += 1
+        else: stable_counter, last_prediction = 1, word
+        
+        if stable_counter >= 6:
+            if word == "FULL STOP":
+                if sentence_buffer: 
+                    speak_humane_offline(" ".join(sentence_buffer), current_emotion)
                 sentence_buffer = []
-                last_committed_word = None
-
-            # ---------- NORMAL WORD ----------
-            else:
-                if predicted_word != last_committed_word:
-                    sentence_buffer.append(predicted_word)
-                    print("Sentence:", sentence_buffer)
-                    last_committed_word = predicted_word
-
+            elif word != last_committed_word:
+                sentence_buffer.append(word)
+                last_committed_word = word
             stable_counter = 0
 
-    else:
-        last_prediction = None
-        stable_counter = 0
-
-    # -----------------------------
-    # Display sentence
-    # -----------------------------
+    # C. INTERFACE
     h, w, _ = frame.shape
-
+    cv2.putText(frame, f"TONE: {current_emotion.upper()}", (20, 50), 2, 1, (0, 255, 0), 2)
+    cv2.putText(frame, f"SIGN: {active_word}", (20, 95), 2, 0.8, (255, 165, 0), 2)
     if sentence_buffer:
-        sentence_text = " ".join(sentence_buffer)
+        cv2.rectangle(frame, (40, h-90), (w-40, h-30), (0, 0, 0), -1)
+        cv2.putText(frame, " ".join(sentence_buffer), (60, h-50), 2, 1, (255, 255, 255), 2)
 
-        (sw, sh), _ = cv2.getTextSize(
-            sentence_text,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            2
-        )
-
-        sx = (w - sw) // 2
-        sy = int(h * 0.9)
-
-        overlay = frame.copy()
-        cv2.rectangle(
-            overlay,
-            (sx - 15, sy - sh - 15),
-            (sx + sw + 15, sy + 10),
-            (0, 0, 0),
-            -1
-        )
-
-        frame = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
-
-        cv2.putText(
-            frame,
-            sentence_text,
-            (sx, sy),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 255, 255),
-            2
-        )
-
-    # Display emotion
-    cv2.putText(
-        frame,
-        f"Emotion: {current_emotion}",
-        (20, 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        (0, 255, 0),
-        2
-    )
-
-    cv2.imshow("VoiceBridge – Emotion Aware ISL", frame)
-
-    if cv2.waitKey(1) & 0xFF == 27:
-        break
+    cv2.imshow("Humane Offline VoiceBridge", frame)
+    if cv2.waitKey(1) & 0xFF == 27: break
 
 cap.release()
+face_detector.close()
+hand_detector.close()
 cv2.destroyAllWindows()
