@@ -11,8 +11,8 @@ from sklearn.metrics import accuracy_score, confusion_matrix, classification_rep
 # -----------------------------
 # Paths
 # -----------------------------
-DATASET_PATH = os.path.join("dataset", "isl_landmarks.csv")
-MODEL_PATH = os.path.join("models", "isl_classifier.pkl")
+DATASET_PATH = os.path.join("dataset", "isl.csv")
+MODEL_PATH = os.path.join("models", "isl.pkl")
 SCALER_PATH = os.path.join("models", "scaler.pkl")
 
 # -----------------------------
@@ -32,7 +32,7 @@ print("Classes:", np.unique(y))
 # Train / test split
 # -----------------------------
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.3, random_state=42, stratify=y
+    X, y, test_size=0.2, random_state=42, stratify=y
 )
 
 # -----------------------------
