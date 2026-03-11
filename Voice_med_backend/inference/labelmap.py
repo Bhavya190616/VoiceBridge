@@ -5,7 +5,7 @@ LABEL_TO_WORD = {
     "Y": "YES",
     "N": "NO",
     "T": "THANK YOU",
-    "P": "PLEASE",
+    "S": "SORRY",
     "F": "FULL STOP",
     # Numbers
     "0": "ZERO",
