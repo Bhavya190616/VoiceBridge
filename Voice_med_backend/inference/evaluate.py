@@ -5,6 +5,7 @@ Output  : prints results + saves confusion_matrix.png in same folder
 """
 
 import os, sys, numpy as np
+import pandas as pd
 
 # ── Paths (mirrors voicebridge_ui.py structure) ───────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -12,7 +13,7 @@ MODELS_DIR = os.path.normpath(os.path.join(BASE_DIR, "..", "models"))
 DATA_DIR   = os.path.normpath(os.path.join(BASE_DIR, "..", "dataset"))   # your folder
 LABEL_MAP_PATH = os.path.join(BASE_DIR, "labelmap.py")
 
-CLASSIFIER_PATH = os.path.join(MODELS_DIR, "isl_classifier.pkl")
+CLASSIFIER_PATH = os.path.join(MODELS_DIR, "isl.pkl")
 SCALER_PATH     = os.path.join(MODELS_DIR, "scaler.pkl")
 
 # ── Load your actual saved model ──────────────────────────────────────────────
@@ -32,26 +33,25 @@ LABEL_TO_WORD = lm.LABEL_TO_WORD
 print(f"  ✓ Labels     : {len(LABEL_TO_WORD)} → {list(LABEL_TO_WORD.values())}")
 
 # ── Load dataset ──────────────────────────────────────────────────────────────
-import glob, pandas as pd
+# ── Load dataset (ONLY isl.csv) ─────────────────────────────
+print("\nLoading dataset...")
 
-print("\nSearching for dataset...")
-csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-if not csv_files:
-    # fallback: search one level up
-    csv_files = glob.glob(os.path.join(BASE_DIR, "..", "**", "*.csv"), recursive=True)
+DATASET_PATH = os.path.join(BASE_DIR, "..", "dataset", "isl.csv")
 
-if not csv_files:
-    print(f"  ✗ No CSV found in {DATA_DIR}")
-    print("    Edit DATA_DIR in this script to point to your dataset folder.")
-    sys.exit(1)
+print("Dataset path:", DATASET_PATH)
 
-print(f"  ✓ Found: {csv_files}")
-dfs = [pd.read_csv(f) for f in csv_files]
-df  = pd.concat(dfs, ignore_index=True)
+if not os.path.exists(DATASET_PATH):
+    print("Dataset not found!")
+    sys.exit()
+
+df = pd.read_csv(DATASET_PATH)
 
 X = df.iloc[:, :-1].values
 y = df.iloc[:, -1].values
-print(f"  ✓ Shape: {X.shape}  |  Classes: {sorted(set(y))}")
+
+print("Samples:", X.shape[0])
+print("Features:", X.shape[1])
+print("Classes:", sorted(set(y)))
 
 print("\nClass distribution:")
 for cls in sorted(set(y)):
@@ -125,7 +125,7 @@ try:
         f'Model: {type(clf).__name__}  |  '
         f'Test: {acc*100:.1f}%  |  '
         f'5-Fold CV: {cv_scores.mean()*100:.1f}% ± {cv_scores.std()*100:.1f}%\n'
-        f'Dataset: {len(X)} samples  |  16 ISL Signs  |  3 Signers',
+        f'Dataset: {len(X)} samples  |  16 ISL Signs ',
         fontsize=12, pad=15)
     plt.tight_layout()
 

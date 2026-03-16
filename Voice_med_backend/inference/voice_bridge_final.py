@@ -5,7 +5,7 @@ Emotion-Aware Bidirectional ISL ↔ Speech System
 
 import tkinter as tk
 import customtkinter as ctk
-import cv2, queue, threading, os, json, time
+import cv2, queue, threading, os, json, time, re
 import numpy as np
 from PIL import Image, ImageTk, ImageFont, ImageDraw
 
@@ -59,6 +59,178 @@ except Exception as e:
     print(f"  ✗  labelmap load failed: {e}")
 
 DEVICE_INDEX = None
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SPEECH INTELLIGENCE — Pipeline 2 helper
+# Converts natural spoken English → list of signmap keys
+# Tier 1: synonym/variant mapping  |  Tier 2: filler word removal
+# Fully offline, zero extra dependencies
+# ═════════════════════════════════════════════════════════════════════════════
+class SpeechIntelligence:
+
+    WORD_MAP = {
+        # Greetings
+        "hi":"hello","hey":"hello","greetings":"hello",
+        "goodbye":"bye","good bye":"bye","farewell":"bye","see you":"bye",
+        # Thank you
+        "thanks":"thank you","ty":"thank you","cheers":"thank you",
+        # You/Your
+        "you're":"you","ur":"you","yours":"your",
+        # Me/My
+        "i'm":"me","i am":"me","myself":"me","mine":"my",
+        # We/Our
+        "we're":"we","ours":"our",
+        # They
+        "their":"they","them":"they","they're":"they",
+        # Negation
+        "don't":"do not","dont":"do not",
+        "doesn't":"does not","doesnt":"does not",
+        "can't":"cannot","cant":"cannot",
+        # Come/Go
+        "coming":"come","came":"come",
+        "going":"go","went":"go","gone":"go","leave":"go","leaving":"go",
+        # Help
+        "helping":"help","helped":"help","assist":"help","assistance":"help",
+        # Work
+        "working":"work","worked":"work","job":"work",
+        # Learn/Study
+        "learning":"learn","learned":"learn",
+        "studying":"study","studied":"study","education":"study",
+        "school":"study","class":"college","university":"college","institution":"college",
+        # Talk/Sing
+        "talking":"talk","talked":"talk","speak":"talk","speaking":"talk",
+        "spoke":"talk","say":"talk","said":"talk",
+        "singing":"sing","sang":"sing","song":"sing",
+        # See/TV
+        "seeing":"see","saw":"see","look":"see","looking":"see",
+        "watch":"see","watching":"see","tv":"television","telly":"television",
+        # Eat/Food
+        "eating":"eat","ate":"eat","food":"eat","hungry":"eat",
+        "meal":"eat","lunch":"eat","dinner":"eat","breakfast":"eat",
+        # Walk
+        "walking":"walk","walked":"walk","run":"walk","running":"walk","move":"walk",
+        # Wash
+        "washing":"wash","washed":"wash","clean":"wash","cleaning":"wash",
+        # Stay/Home
+        "staying":"stay","stayed":"stay","remain":"stay",
+        "house":"home","place":"home",
+        # Keep
+        "keeping":"keep","kept":"keep","hold":"keep","maintain":"keep",
+        # Ask
+        "asking":"ask","asked":"ask","question":"ask","request":"ask",
+        # Change
+        "changing":"change","changed":"change","different":"change",
+        # Finish
+        "finished":"finish","done":"finish","complete":"finish",
+        "completed":"finish","end":"finish","over":"finish",
+        # Fight
+        "fighting":"fight","fought":"fight","argue":"fight","argument":"fight",
+        # Laugh
+        "laughing":"laugh","laughed":"laugh","funny":"laugh",
+        # Emotions
+        "unhappy":"sad","upset":"sad","cry":"sad","crying":"sad",
+        "glad":"happy","joy":"happy","joyful":"happy",
+        "wonderful":"great","fantastic":"great","excellent":"best",
+        "nice":"good","fine":"good","okay":"good","ok":"good",
+        "lovely":"beautiful","bad":"wrong","incorrect":"wrong",
+        "correct":"right","secure":"safe","lonely":"alone","occupied":"busy",
+        # Time
+        "today":"now","currently":"now","later":"after",
+        "earlier":"before","following":"next","daily":"day","repeat":"again",
+        # Location
+        "there":"here","somewhere":"where","everywhere":"where","far":"distance",
+        # Quantity
+        "many":"more","much":"more","extra":"more","additional":"more",
+        "every":"all","everyone":"all","everything":"all","entire":"whole",
+        # Tech
+        "pc":"computer","laptop":"computer","phone":"computer",
+        "device":"computer","coding":"computer","programming":"computer",
+        # Misc
+        "earth":"world","global":"world","word":"words",
+        "called":"name","method":"way","shall":"will",
+        "noise":"sound","voice":"sound","outside":"out",
+        "signing":"sign","invented":"invent","create":"invent",
+        "typing":"type","engineering":"engineer",
+    }
+
+    DROP_WORDS = {
+        # Articles
+        "the","an",
+        # Auxiliary verbs not in signmap
+        "is","are","am","was","were","been","being",
+        "have","has","had","having","did","does",
+        "would","could","should","might","may","must",
+        # Prepositions not in signmap
+        "in","into","onto","about","above","below",
+        "between","through","across","around","near",
+        "by","for","up","down","under","off",
+        # Filler words
+        "please","just","really","very","quite","rather",
+        "actually","basically","literally","like","well",
+        "um","uh","hmm","oh","ah","yeah",
+        "i","i've","i'd","i'll",
+        # Subordinate
+        "if","because","since","although","while",
+        "whether","unless","until","as",
+        # Generic verbs not in signmap
+        "get","got","getting","give","giving","given",
+        "take","taking","taken","took","make","made","making",
+        "put","putting","know","knew","known",
+        "think","thought","want","wanted","need","needed",
+        "try","tried","trying","use","used","using",
+        "let","lets","let's","able","back","still",
+        "even","only","never","always","already",
+        "some","any","few","most","other","new","old",
+        "big","small","long","little","first","last",
+        "same","thing","things","person","people",
+        "man","woman","tell","told","telling",
+        "show","showing","showed",
+    }
+
+    def process(self, sentence: str) -> list:
+        if not sentence:
+            return []
+        sentence = sentence.lower().strip()
+        sentence = re.sub(r"[^\w\s']", " ", sentence)
+
+        # Handle multi-word signs before splitting
+        sentence = sentence.replace("do not",    "__DO_NOT__")
+        sentence = sentence.replace("don't",     "__DO_NOT__")
+        sentence = sentence.replace("dont",      "__DO_NOT__")
+        sentence = sentence.replace("does not",  "__DOES_NOT__")
+        sentence = sentence.replace("doesn't",   "__DOES_NOT__")
+        sentence = sentence.replace("doesnt",    "__DOES_NOT__")
+        sentence = sentence.replace("thank you", "__THANK_YOU__")
+        sentence = sentence.replace("thanks",    "__THANK_YOU__")
+
+        tokens  = sentence.split()
+        result  = []
+
+        for token in tokens:
+            if token == "__DO_NOT__":
+                result.append("do not"); continue
+            if token == "__DOES_NOT__":
+                result.append("does not"); continue
+            if token == "__THANK_YOU__":
+                result.append("thank you"); continue
+
+            # Tier 1 — synonym map
+            if token in self.WORD_MAP:
+                result.append(self.WORD_MAP[token]); continue
+
+            # Keep if directly in signmap (checked at runtime via sign_map)
+            # We keep the token and let the caller decide
+            if token not in self.DROP_WORDS:
+                result.append(token)
+
+        # Remove consecutive duplicates
+        deduped = []
+        for w in result:
+            if not deduped or w != deduped[-1]:
+                deduped.append(w)
+
+        return deduped
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # SIGN → SPEECH ENGINE
@@ -224,6 +396,9 @@ class SignToSpeechEngine:
     def stop(self): self._stop.set()
 
 
+# Module-level singleton — shared across the app
+_speech_intel = SpeechIntelligence()
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SPEECH → SIGN ENGINE
 # ═════════════════════════════════════════════════════════════════════════════
@@ -257,11 +432,16 @@ class SpeechToSignEngine:
                         result=json.loads(recognizer.Result()); text=result.get("text","").strip()
                         if text and text!=last_sent:
                             last_sent=text; self.status_cb(f'Heard: "{text}"')
-                            for word in text.split():
+                            # ── SpeechIntelligence: map to signable words ──
+                            sign_words = _speech_intel.process(text)
+                            for word in sign_words:
                                 if self._stop.is_set(): break
-                                word=word.lower()
-                                if word in sign_map: self._play_video(os.path.join(BASE_DIR,"..",sign_map[word]),word)
-                                else: self._show_placeholder(word)
+                                if word in sign_map:
+                                    # Known word — play sign video
+                                    self._play_video(os.path.join(BASE_DIR,"..",sign_map[word]),word)
+                                else:
+                                    # Unknown word — spell it letter by letter
+                                    self._spell_word(word, sign_map)
         except Exception as e: self.status_cb(f"Stream error: {e}")
         self.status_cb("Stopped")
 
@@ -289,6 +469,58 @@ class SpeechToSignEngine:
             except queue.Full: pass
             time.sleep(1/30)
 
+    def _spell_word(self, word, sign_map):
+        """
+        Spell an unknown word letter by letter using a-z sign videos.
+        Fast mode: plays every 3rd frame at 2x speed so spelling feels snappy.
+        Header card shown for only 0.3 sec before letters begin.
+        Example: 'water' → W → A → T → E → R
+        """
+        # Show brief header card — 0.3 sec (9 frames)
+        for _ in range(9):
+            if self._stop.is_set(): return
+            img = np.zeros((300,400,3), dtype=np.uint8); img[:] = (20,20,32)
+            cv2.putText(img, "SPELLING:",
+                        (30,110), cv2.FONT_HERSHEY_DUPLEX, 0.85, (100,100,140), 1)
+            cv2.putText(img, f'"{word.upper()}"',
+                        (30,165), cv2.FONT_HERSHEY_DUPLEX, 1.2, (0,200,180), 2)
+            try: self.frame_q.put_nowait(img)
+            except queue.Full: pass
+            time.sleep(1/30)
+
+        # Play each letter fast
+        for letter in word.lower():
+            if self._stop.is_set(): return
+            if letter in sign_map:
+                video_path = os.path.join(BASE_DIR, "..", sign_map[letter])
+                self._play_letter_fast(video_path, letter.upper())
+            # Non-alpha characters skipped silently
+
+    def _play_letter_fast(self, path, letter):
+        """
+        Play a letter sign video at 3x speed by reading every 3rd frame.
+        Keeps the sign recognisable but moves quickly during spelling.
+        """
+        if not os.path.exists(path): return
+        cap = cv2.VideoCapture(path)
+        frame_idx = 0
+        while not self._stop.is_set():
+            ret, frame = cap.read()
+            if not ret: break
+            frame_idx += 1
+            if frame_idx % 3 != 0:   # skip 2 out of every 3 frames → 3x speed
+                continue
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, _ = frame.shape
+            # Letter label overlay — bright cyan so user can track progress
+            cv2.rectangle(frame, (0,h-46), (w,h), (10,10,22), -1)
+            cv2.putText(frame, letter,
+                        (12, h-10), cv2.FONT_HERSHEY_DUPLEX, 1.1, (0,230,200), 2)
+            try: self.frame_q.put_nowait(frame)
+            except queue.Full: pass
+            time.sleep(1/30)   # display rate stays 30fps — only content is sparser
+        cap.release()
+
     def start(self):
         self._stop.clear()
         self._thread=threading.Thread(target=self._run,daemon=True); self._thread.start()
@@ -305,7 +537,7 @@ ACCENT1  = "#00d4aa"   # teal  — Sign→Speech
 ACCENT2  = "#7b5cf0"   # violet — Speech→Sign
 MUTED    = "#8892cb"
 TEXT_PRI = "#e8eaf2"
-TEXT_SEC = "#fbef09"
+TEXT_SEC = "#d6ce39"
 RED      = "#e05c5c"
 
 CANVAS_W, CANVAS_H = 570, 420
@@ -313,7 +545,7 @@ CANVAS_W, CANVAS_H = 570, 420
 # Glow border colour per panel
 GLOW1 = "#00d4aa"   # teal glow — Sign→Speech
 GLOW2 = "#7b5cf0"   # violet glow — Speech→Sign
-HDR_LINE = "#deec13"  # gold/amber accent line under header
+HDR_LINE = "#f0a500"  # gold/amber accent line under header
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -400,7 +632,7 @@ class VoiceBridgeApp(ctk.CTk):
         # Subtitle — professional italic, spaced lettering feel
         ctk.CTkLabel(hdr,
                      text="Emotion-Aware  ·  Bidirectional  ·  Indian Sign Language  ↔  Speech",
-                     font=("Georgia", 15, "italic"),
+                     font=("Georgia", 12, "italic"),
                      text_color="#e9e450").place(x=29, y=48)
 
         self._hdr_dot = ctk.CTkLabel(hdr, text="● IDLE", font=("Courier",14), text_color=MUTED)
@@ -469,7 +701,7 @@ class VoiceBridgeApp(ctk.CTk):
         # Status + sentence
         self._sign_status_var = tk.StringVar(value="Ready")
         ctk.CTkLabel(card, textvariable=self._sign_status_var,
-                     font=("Courier",15), text_color=TEXT_SEC,
+                     font=("Courier",13), text_color=TEXT_SEC,
                      wraplength=CANVAS_W).grid(row=3, column=0, padx=12, pady=(4,0), sticky="ew")
 
         self._sign_sentence = tk.StringVar(value="")
@@ -519,7 +751,7 @@ class VoiceBridgeApp(ctk.CTk):
 
         self._speech_status_var = tk.StringVar(value="Ready")
         ctk.CTkLabel(card, textvariable=self._speech_status_var,
-                     font=("Courier",15), text_color=TEXT_SEC,
+                     font=("Courier",13), text_color=TEXT_SEC,
                      wraplength=CANVAS_W).grid(row=2, column=0, padx=12, pady=(8,0), sticky="ew")
 
         self._speech_word = tk.StringVar(value="")
