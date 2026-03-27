@@ -125,7 +125,7 @@ try:
         f'Model: {type(clf).__name__}  |  '
         f'Test: {acc*100:.1f}%  |  '
         f'5-Fold CV: {cv_scores.mean()*100:.1f}% ± {cv_scores.std()*100:.1f}%\n'
-        f'Dataset: {len(X)} samples  |  16 ISL Signs ',
+        f'Dataset: {len(X)} samples  |  26 ISL Signs ',
         fontsize=12, pad=15)
     plt.tight_layout()
 

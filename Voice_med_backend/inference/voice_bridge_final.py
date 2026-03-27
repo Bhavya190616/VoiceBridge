@@ -410,17 +410,19 @@ class SpeechToSignEngine:
     def _run(self):
         if not VOSK_OK: self.status_cb("Vosk not installed"); return
         try:
-            with open(VOCAB_PATH)  as f: vocabulary=json.load(f)
             with open(SIGNMAP_PATH) as f: sign_map=json.load(f)
         except Exception as e: self.status_cb(f"Config error: {e}"); return
         if not os.path.exists(VOSK_MODEL): self.status_cb("Vosk model not found"); return
         try: model=vosk.Model(VOSK_MODEL)
         except Exception as e: self.status_cb(f"Vosk model error: {e}"); return
-        grammar=json.dumps(vocabulary); audio_q=queue.Queue()
+        # Unconstrained recognition — Vosk hears full natural English
+        # SpeechIntelligence maps heard words to signs
+        # Unknown words are spelled letter by letter using a-z signs
+        audio_q=queue.Queue()
         try:
             dev_info=sd.query_devices(kind='input'); samplerate=int(dev_info['default_samplerate'])
         except Exception as e: self.status_cb(f"Mic error: {e}"); return
-        recognizer=vosk.KaldiRecognizer(model,samplerate,grammar); last_sent=""
+        recognizer=vosk.KaldiRecognizer(model,samplerate); last_sent=""
         self.status_cb("Listening…")
         try:
             with sd.RawInputStream(samplerate=samplerate,blocksize=8000,dtype='int16',
